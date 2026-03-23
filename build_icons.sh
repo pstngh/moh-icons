@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build standard-compliant .ico (Windows) and .icns (macOS) icon files from SVG sources.
+# Build standard-compliant .ico (Windows) and .icns (macOS) icon files.
 #
-# macOS .icns — Apple standard process using Xcode asset catalog compiler:
-#   1. Preprocess SVG: apply Apple squircle as clip-path (baked into pixels)
-#   2. Render clipped SVG to 1024x1024 PNG
-#   3. Resize to all required dimensions using sips
-#   4. Create temporary .xcassets asset catalog
-#   5. Compile with xcrun actool to produce .icns
-#   Note: The squircle mask must be baked into the PNG pixels because .icns
-#         has no masking feature. actool handles resizing and packaging only.
-#         --minimum-deployment-target < 10.13 forces standalone .icns output
+# macOS .icns — Two input paths supported:
+#   A) From SVG (macos/*-macos.svg):
+#      1. Preprocess SVG: apply Apple squircle as clip-path (baked into pixels)
+#      2. Render clipped SVG to 1024x1024 PNG
+#      3. Resize, build .xcassets, compile with actool
+#   B) From PNG (macos/png/*.png — exported from Icon Composer at 1024x1024):
+#      1. Use PNG directly (squircle already baked in by Icon Composer)
+#      2. Resize, build .xcassets, compile with actool
+#   Note: --minimum-deployment-target < 10.13 forces standalone .icns output
 #         (>= 10.13 embeds into Assets.car instead).
 #   Reference: https://developer.apple.com/design/human-interface-guidelines/app-icons
 #
@@ -19,7 +19,8 @@
 #   3. Package with ImageMagick
 #   Reference: https://learn.microsoft.com/en-us/windows/apps/design/iconography/app-icon-construction
 #
-# Requirements: rsvg-convert (librsvg), sips (macOS built-in), Xcode (actool), magick (ImageMagick), python3
+# Requirements: sips (macOS built-in), Xcode (actool)
+# Optional: rsvg-convert (librsvg) for SVG input, magick (ImageMagick) for .ico, python3 for SVG preprocessing
 
 set -euo pipefail
 
@@ -112,56 +113,39 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-# Build macOS .icns files using Xcode's actool (asset catalog compiler)
+# Convert a 1024x1024 PNG to .icns using actool
+# Usage: png_to_icns <input.png> <output_name>
 # ---------------------------------------------------------------------------
-# The squircle mask is baked into the PNG via SVG preprocessing, then actool
-# handles resizing and packaging into the .icns format.
-# ---------------------------------------------------------------------------
-build_macos_icns() {
-  echo "=== macOS .icns ==="
+png_to_icns() {
+  local full_png="$1"
+  local name="$2"
 
-  for svg in "$SCRIPT_DIR"/macos/*-macos.svg; do
-    [ -f "$svg" ] || continue
-    local name
-    name=$(basename "$svg" -macos.svg)
+  local tmp_dir
+  tmp_dir=$(mktemp -d /tmp/"${name}_actool_XXXX")
 
-    echo "  Building: ${name}.icns"
+  # Create .xcassets with all required icon sizes
+  local xcassets="${tmp_dir}/Assets.xcassets/AppIcon.appiconset"
+  mkdir -p "$xcassets"
 
-    local tmp_dir
-    tmp_dir=$(mktemp -d /tmp/"${name}_actool_XXXX")
+  local json_images=""
+  for entry in "${ICONSET_ENTRIES[@]}"; do
+    IFS=: read -r base scale pixels <<< "$entry"
+    local filename
+    if [ "$scale" = "1x" ]; then
+      filename="icon_${base}.png"
+    else
+      filename="icon_${base}@${scale}.png"
+    fi
 
-    # Step 1: Preprocess SVG — apply squircle clip-path, strip overlay
-    local tmp_svg="${tmp_dir}/${name}_clipped.svg"
-    preprocess_macos_svg "$svg" "$tmp_svg"
+    sips -z "$pixels" "$pixels" "$full_png" --out "$xcassets/$filename" >/dev/null 2>&1
+    echo "    ${filename} (${pixels}x${pixels})"
 
-    # Step 2: Render clipped SVG to 1024x1024 PNG
-    local full_png="${tmp_dir}/full_1024.png"
-    rsvg-convert -w 1024 -h 1024 "$tmp_svg" -o "$full_png"
-
-    # Step 3: Create .xcassets with all required icon sizes
-    local xcassets="${tmp_dir}/Assets.xcassets/AppIcon.appiconset"
-    mkdir -p "$xcassets"
-
-    local json_images=""
-    for entry in "${ICONSET_ENTRIES[@]}"; do
-      IFS=: read -r base scale pixels <<< "$entry"
-      local filename
-      if [ "$scale" = "1x" ]; then
-        filename="icon_${base}.png"
-      else
-        filename="icon_${base}@${scale}.png"
-      fi
-
-      sips -z "$pixels" "$pixels" "$full_png" --out "$xcassets/$filename" >/dev/null 2>&1
-      echo "    ${filename} (${pixels}x${pixels})"
-
-      # Build JSON array entry
-      [ -n "$json_images" ] && json_images="${json_images},"
-      json_images="${json_images}
+    [ -n "$json_images" ] && json_images="${json_images},"
+    json_images="${json_images}
     {\"filename\":\"${filename}\",\"idiom\":\"mac\",\"scale\":\"${scale}\",\"size\":\"${base}\"}"
-    done
+  done
 
-    cat > "$xcassets/Contents.json" << JSONEOF
+  cat > "$xcassets/Contents.json" << JSONEOF
 {
   "images": [${json_images}
   ],
@@ -172,26 +156,84 @@ build_macos_icns() {
 }
 JSONEOF
 
-    # Step 4: Compile asset catalog with actool
-    local output_dir="${tmp_dir}/output"
-    mkdir -p "$output_dir"
-    xcrun actool \
-      "${tmp_dir}/Assets.xcassets" \
-      --compile "$output_dir" \
-      --platform macosx \
-      --target-device mac \
-      --minimum-deployment-target 10.9 \
-      --app-icon AppIcon \
-      --include-all-app-icons \
-      --output-partial-info-plist "${tmp_dir}/Info.plist"
+  # Compile asset catalog with actool
+  local output_dir="${tmp_dir}/output"
+  mkdir -p "$output_dir"
+  xcrun actool \
+    "${tmp_dir}/Assets.xcassets" \
+    --compile "$output_dir" \
+    --platform macosx \
+    --target-device mac \
+    --minimum-deployment-target 10.9 \
+    --app-icon AppIcon \
+    --include-all-app-icons \
+    --output-partial-info-plist "${tmp_dir}/Info.plist"
 
-    # Step 5: Move .icns to repo root
-    mv "$output_dir/AppIcon.icns" "${SCRIPT_DIR}/${name}.icns"
-    echo "    -> ${name}.icns"
+  mv "$output_dir/AppIcon.icns" "${SCRIPT_DIR}/${name}.icns"
+  echo "    -> ${name}.icns"
 
-    # Clean up
+  rm -rf "$tmp_dir"
+}
+
+# ---------------------------------------------------------------------------
+# Build macOS .icns from PNG files exported from Icon Composer
+# Expects 1024x1024 PNGs in macos/png/ with squircle already baked in
+# ---------------------------------------------------------------------------
+build_macos_icns_from_png() {
+  local found=false
+  for png in "$SCRIPT_DIR"/macos/png/*.png; do
+    [ -f "$png" ] || continue
+    found=true
+    local name
+    name=$(basename "$png" .png)
+    echo "  Building from PNG: ${name}.icns"
+    png_to_icns "$png" "$name"
+  done
+  $found
+}
+
+# ---------------------------------------------------------------------------
+# Build macOS .icns from SVG sources (fallback when no PNGs available)
+# Preprocesses SVGs with squircle clip-path before rasterization
+# ---------------------------------------------------------------------------
+build_macos_icns_from_svg() {
+  for svg in "$SCRIPT_DIR"/macos/*-macos.svg; do
+    [ -f "$svg" ] || continue
+    local name
+    name=$(basename "$svg" -macos.svg)
+
+    echo "  Building from SVG: ${name}.icns"
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/"${name}_svg_XXXX")
+
+    # Preprocess SVG — apply squircle clip-path, strip overlay
+    local tmp_svg="${tmp_dir}/${name}_clipped.svg"
+    preprocess_macos_svg "$svg" "$tmp_svg"
+
+    # Render clipped SVG to 1024x1024 PNG
+    local full_png="${tmp_dir}/full_1024.png"
+    rsvg-convert -w 1024 -h 1024 "$tmp_svg" -o "$full_png"
+
+    png_to_icns "$full_png" "$name"
+
     rm -rf "$tmp_dir"
   done
+}
+
+# ---------------------------------------------------------------------------
+# Build macOS .icns — prefers PNG input, falls back to SVG
+# ---------------------------------------------------------------------------
+build_macos_icns() {
+  echo "=== macOS .icns ==="
+
+  if [ -d "$SCRIPT_DIR/macos/png" ] && ls "$SCRIPT_DIR"/macos/png/*.png >/dev/null 2>&1; then
+    echo "  Using PNG sources from macos/png/"
+    build_macos_icns_from_png
+  else
+    echo "  No PNGs found, using SVG sources from macos/"
+    build_macos_icns_from_svg
+  fi
 }
 
 # ---------------------------------------------------------------------------
