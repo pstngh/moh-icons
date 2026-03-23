@@ -6,8 +6,8 @@
 #   2. Resize to all required dimensions using sips
 #   3. Create temporary .xcassets asset catalog
 #   4. Compile with xcrun actool to produce .icns
-#   Note: Icons are stored as square pixels. On macOS Tahoe+, the OS applies the
-#         squircle mask at display time. On older macOS the icon appears square.
+#   Note: Icons are stored as square pixels. Since Big Sur (11.0), macOS applies
+#         the squircle mask at display time in Finder, Dock, and Spotlight.
 #         --minimum-deployment-target < 10.13 forces standalone .icns output
 #         (>= 10.13 embeds into Assets.car instead).
 #   Reference: https://developer.apple.com/design/human-interface-guidelines/app-icons
