@@ -3,8 +3,11 @@
 #
 # macOS .icns — Apple standard process using Xcode asset catalog compiler:
 #   1. Render SVG to 1024x1024 PNG
-#   2. Create temporary .xcassets with single-size AppIcon
-#   3. Compile with xcrun actool (applies squircle mask automatically)
+#   2. Resize to all required dimensions using sips
+#   3. Create temporary .xcassets with all AppIcon sizes
+#   4. Compile with xcrun actool (applies squircle mask, produces .icns)
+#   Note: --minimum-deployment-target must be < 10.13 to get standalone .icns
+#         output (>= 10.13 embeds into Assets.car instead).
 #   Reference: https://developer.apple.com/design/human-interface-guidelines/app-icons
 #
 # Windows .ico — Microsoft specification:
@@ -20,6 +23,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------------------
+# macOS iconset sizes per Apple Human Interface Guidelines
+# https://developer.apple.com/design/human-interface-guidelines/app-icons#macOS-app-icon-sizes
+# Format: "WxH:scale:pixels" where pixels is the actual rendered size
+# ---------------------------------------------------------------------------
+ICONSET_ENTRIES=(
+  "16x16:1x:16"
+  "16x16:2x:32"
+  "32x32:1x:32"
+  "32x32:2x:64"
+  "128x128:1x:128"
+  "128x128:2x:256"
+  "256x256:1x:256"
+  "256x256:2x:512"
+  "512x512:1x:512"
+  "512x512:2x:1024"
+)
+
+# ---------------------------------------------------------------------------
 # Windows ICO sizes per Microsoft specification
 # Base sizes: 16, 24, 32 at scale factors 100%-400%
 # Deduplicated and sorted:
@@ -29,8 +50,10 @@ ICO_SIZES=(16 20 24 30 32 36 40 48 60 64 72 80 96 256)
 # ---------------------------------------------------------------------------
 # Build macOS .icns files using Xcode's actool (asset catalog compiler)
 # ---------------------------------------------------------------------------
-# actool automatically applies Apple's squircle mask and generates all
-# required icon sizes from a single 1024x1024 source image.
+# actool applies Apple's squircle mask and packages the icon as .icns.
+# We use --minimum-deployment-target 10.9 so actool writes a standalone
+# .icns file rather than embedding the icon into Assets.car (which happens
+# with deployment targets >= 10.13).
 # ---------------------------------------------------------------------------
 build_macos_icns() {
   echo "=== macOS .icns ==="
@@ -42,27 +65,39 @@ build_macos_icns() {
 
     echo "  Building: ${name}.icns"
 
-    # Step 1: Render SVG to 1024x1024 PNG
     local tmp_dir
     tmp_dir=$(mktemp -d /tmp/"${name}_actool_XXXX")
-    local full_png="${tmp_dir}/icon_1024x1024.png"
-    rsvg-convert -w 1024 -h 1024 "$svg" -o "$full_png"
-    echo "    Rendered 1024x1024 PNG"
 
-    # Step 2: Create temporary .xcassets with single-size AppIcon
+    # Step 1: Render SVG to 1024x1024 PNG
+    local full_png="${tmp_dir}/full_1024.png"
+    rsvg-convert -w 1024 -h 1024 "$svg" -o "$full_png"
+
+    # Step 2: Create .xcassets with all required icon sizes
     local xcassets="${tmp_dir}/Assets.xcassets/AppIcon.appiconset"
     mkdir -p "$xcassets"
-    cp "$full_png" "$xcassets/icon_1024x1024.png"
 
-    cat > "$xcassets/Contents.json" << 'JSONEOF'
+    local json_images=""
+    for entry in "${ICONSET_ENTRIES[@]}"; do
+      IFS=: read -r base scale pixels <<< "$entry"
+      local filename
+      if [ "$scale" = "1x" ]; then
+        filename="icon_${base}.png"
+      else
+        filename="icon_${base}@${scale}.png"
+      fi
+
+      sips -z "$pixels" "$pixels" "$full_png" --out "$xcassets/$filename" >/dev/null 2>&1
+      echo "    ${filename} (${pixels}x${pixels})"
+
+      # Build JSON array entry
+      [ -n "$json_images" ] && json_images="${json_images},"
+      json_images="${json_images}
+    {\"filename\":\"${filename}\",\"idiom\":\"mac\",\"scale\":\"${scale}\",\"size\":\"${base}\"}"
+    done
+
+    cat > "$xcassets/Contents.json" << JSONEOF
 {
-  "images": [
-    {
-      "filename": "icon_1024x1024.png",
-      "idiom": "mac",
-      "platform": "macos",
-      "size": "512x512@2x"
-    }
+  "images": [${json_images}
   ],
   "info": {
     "author": "xcode",
@@ -79,7 +114,7 @@ JSONEOF
       --compile "$output_dir" \
       --platform macosx \
       --target-device mac \
-      --minimum-deployment-target 11.0 \
+      --minimum-deployment-target 10.9 \
       --app-icon AppIcon \
       --include-all-app-icons \
       --output-partial-info-plist "${tmp_dir}/Info.plist"
