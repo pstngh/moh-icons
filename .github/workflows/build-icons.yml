@@ -5,7 +5,7 @@ on:
     paths:
       - "windows/*.svg"
       - "macos/*.svg"
-      - "build_icons.py"
+      - "build_icons.sh"
       - ".github/workflows/build-icons.yml"
   workflow_dispatch:
 
@@ -14,22 +14,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcairo2-dev
-          pip install Pillow cairosvg
+          brew install librsvg imagemagick
 
       - name: Build .ico and .icns files
-        run: python build_icons.py
+        run: bash build_icons.sh
 
       - name: Commit generated icons
         run: |
