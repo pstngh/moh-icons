@@ -264,6 +264,7 @@ def main():
     repo_root = Path(__file__).parent
     windows_dir = repo_root / "windows"
     macos_dir = repo_root / "macos"
+    output_dir = repo_root  # output to repo root
 
     # Discover SVGs
     win_svgs = sorted(windows_dir.glob("*.svg"))
@@ -278,7 +279,7 @@ def main():
         print("=== Windows .ico ===")
         for svg in win_svgs:
             name = svg.stem  # e.g. "openmohaa"
-            output = windows_dir / f"{name}.ico"
+            output = output_dir / f"{name}.ico"
             build_windows_ico(str(svg), str(output))
         print()
 
@@ -287,7 +288,7 @@ def main():
         print("=== macOS .icns ===")
         for svg in mac_svgs:
             name = svg.stem.replace("-macos", "")  # strip "-macos" suffix
-            output = macos_dir / f"{name}.icns"
+            output = output_dir / f"{name}.icns"
             build_macos_icns(str(svg), str(output))
         print()
 
