@@ -25,6 +25,7 @@ macOS .ICNS specification (Apple):
 
 import io
 import os
+import re
 import struct
 import sys
 from pathlib import Path
@@ -76,9 +77,105 @@ def svg_to_png(svg_path: str, size: int) -> bytes:
     )
 
 
+def svg_string_to_png(svg_string: str, size: int) -> bytes:
+    """Render an SVG string to PNG at the given square size."""
+    return cairosvg.svg2png(
+        bytestring=svg_string.encode("utf-8"),
+        output_width=size,
+        output_height=size,
+    )
+
+
 def png_bytes_to_image(png_data: bytes) -> Image.Image:
     """Load PNG bytes into a Pillow Image (RGBA)."""
     return Image.open(io.BytesIO(png_data)).convert("RGBA")
+
+
+# ---------------------------------------------------------------------------
+# Apple squircle (continuous corner curve) mask for macOS icons
+# ---------------------------------------------------------------------------
+# The macOS SVGs contain the Apple squircle as a compound path in the
+# App_Icon_Shape group. It draws a full rectangle then cuts out the squircle
+# interior (even-odd fill). We extract just the squircle interior path and
+# use it as a white-on-black alpha mask so the icon corners are transparent.
+# ---------------------------------------------------------------------------
+
+# The squircle interior path extracted from the macOS SVGs (1024x1024 viewBox).
+# This is the exact Apple continuous corner curve used in the App_Icon_Shape.
+_APPLE_SQUIRCLE_PATH = (
+    "M1024,651c0,14.24,0,28.48-.08,42.73-.07,12-.21,23.99-.53,35.98"
+    "-.71,26.13-2.25,52.49-6.89,78.34-4.71,26.22-12.4,50.62-24.53,74.44"
+    "-11.92,23.41-27.49,44.84-46.07,63.41s-40,34.15-63.41,46.07"
+    "c-23.82,12.12-48.22,19.82-74.44,24.53-25.84,4.65-52.2,6.18-78.34,6.89"
+    "-11.99.33-23.99.46-35.98.53-14.24.09-28.48.08-42.73.08h-278"
+    "c-14.24,0-28.48,0-42.73-.08-12-.07-23.99-.21-35.98-.53"
+    "-26.13-.71-52.49-2.25-78.34-6.89-26.22-4.71-50.62-12.4-74.44-24.53"
+    "-23.41-11.92-44.84-27.49-63.41-46.07s-34.15-40-46.07-63.41"
+    "c-12.12-23.82-19.82-48.22-24.53-74.44-4.65-25.84-6.18-52.2-6.89-78.34"
+    "-.33-11.99-.46-23.99-.53-35.98C0,679.48,0,665.24,0,651v-278"
+    "C0,358.76,0,344.52.08,330.27c.07-12,.21-23.99.53-35.98"
+    ".71-26.13,2.25-52.49,6.89-78.34,4.71-26.22,12.4-50.62,24.53-74.44"
+    ",11.92-23.41,27.49-44.84,46.07-63.41s40-34.15,63.41-46.07"
+    "c23.82-12.12,48.22-19.82,74.44-24.53,25.84-4.65,52.2-6.18,78.34-6.89"
+    ",11.99-.33,23.99-.46,35.98-.53C344.52,0,358.76,0,373,0h278"
+    "c14.24,0,28.48,0,42.73.08,12,.07,23.99.21,35.98.53"
+    ",26.13.71,52.49,2.25,78.34,6.89,26.22,4.71,50.62,12.4,74.44,24.53"
+    ",23.41,11.92,44.84,27.49,63.41,46.07s34.15,40,46.07,63.41"
+    "c12.12,23.82,19.82,48.22,24.53,74.44,4.65,25.84,6.18,52.2,6.89,78.34"
+    ",.33,11.99,.46,23.99,.53,35.98,.09,14.24,.08,28.48,.08,42.73v278Z"
+)
+
+_SQUIRCLE_MASK_SVG = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="black"/>'
+    f'<path d="{_APPLE_SQUIRCLE_PATH}" fill="white"/>'
+    '</svg>'
+)
+
+
+def _strip_squircle_overlay(svg_content: str) -> str:
+    """Remove the App_Icon_Shape group from an SVG so it renders without the
+    gray corner overlay. The squircle mask is applied separately via alpha."""
+    return re.sub(
+        r'<g\s+id="App_Icon_Shape">.*?</g>',
+        '',
+        svg_content,
+        flags=re.DOTALL,
+    )
+
+
+def svg_to_squircle_png(svg_path: str, size: int) -> bytes:
+    """Render a macOS SVG to PNG with the Apple squircle alpha mask applied.
+
+    1. Strip the gray App_Icon_Shape overlay from the SVG
+    2. Render the clean icon to RGBA
+    3. Render the squircle mask (white shape on black)
+    4. Use the mask luminance as the icon's alpha channel
+    """
+    with open(svg_path, "r") as f:
+        svg_content = f.read()
+
+    clean_svg = _strip_squircle_overlay(svg_content)
+
+    # Render icon without the overlay
+    icon_png = cairosvg.svg2png(
+        bytestring=clean_svg.encode("utf-8"),
+        output_width=size,
+        output_height=size,
+    )
+    icon_img = png_bytes_to_image(icon_png)
+
+    # Render squircle mask
+    mask_png = svg_string_to_png(_SQUIRCLE_MASK_SVG, size)
+    mask_img = Image.open(io.BytesIO(mask_png)).convert("L")  # grayscale
+
+    # Apply mask as alpha channel
+    icon_img.putalpha(mask_img)
+
+    buf = io.BytesIO()
+    icon_img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +343,11 @@ def build_windows_ico(svg_path: str, output_path: str) -> None:
 
 
 def build_macos_icns(svg_path: str, output_path: str) -> None:
-    """Generate a standard-compliant macOS .icns from an SVG source."""
+    """Generate a standard-compliant macOS .icns with Apple squircle mask."""
     print(f"  Building ICNS: {output_path}")
     entries = []
     for ostype, size, desc in ICNS_ENTRIES:
-        png_data = svg_to_png(svg_path, size)
+        png_data = svg_to_squircle_png(svg_path, size)
         entries.append((ostype, png_data))
         print(f"    {ostype.decode():4} {size:>4}x{size:<4}  ({desc})")
 
