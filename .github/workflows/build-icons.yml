@@ -5,6 +5,7 @@ on:
     paths:
       - "windows/*.svg"
       - "macos/*.svg"
+      - "macos/png/*.png"
       - "build_icons.sh"
       - ".github/workflows/build-icons.yml"
   workflow_dispatch:
@@ -33,6 +34,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No icon changes to commit."
           else
-            git commit -m "Build .ico and .icns icons from SVG sources"
+            git commit -m "Build .ico and .icns icon files"
             git push
           fi
